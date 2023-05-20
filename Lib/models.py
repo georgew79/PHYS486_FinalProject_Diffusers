@@ -79,12 +79,13 @@ class SelfAttention(nn.Module):
     No backward call is provided, gradients are tracked.
     '''
 
-    # TODO TODO TODO: ADJUST THIS !
     def __init__(self, channels, size, heads=4):
         super(SelfAttention, self).__init__()
-        self.channels = channels
-        self.size = size
         self.multi_head = nn.MultiheadAttention(channels, heads, batch_first=True)
+        self.size = size
+        self.channels = channels
+
+        # for self attent we want to layer norm over our channels, combine these with GELU. 
         self.layer_norm = nn.LayerNorm([channels])
         self.self_attent = nn.Sequential(
             nn.LayerNorm([channels]),
@@ -93,20 +94,19 @@ class SelfAttention(nn.Module):
             nn.Linear(channels, channels),
         )
 
-    # TODO TODO TODO ADJUST THIS!
-    def forward(self, x):
-        #print("SELF_ATTENT INCOMING:", x.shape)
+    def forward(self, inc):
+        #print("SELF_ATTENT INCOMING:", inc.shape)
 
         # Flatten the two image axes, and swap with the channels so that 
         # we have data of the form (B, img_axis * img_axis, C)
-        x = x.view(-1, self.channels, self.size * self.size).swapaxes(1, 2)
-        self_attent = self.self_attent(x)
+        inc = inc.view(-1, self.channels, self.size*self.size).swapaxes(1, 2)
+        self_attent = self.self_attent(inc)
 
         # Apply attention over the normalized and linearly combined channel sets.
         attention_value, _ = self.multi_head(self_attent, self_attent, self_attent)
 
         # Add residual connection
-        attention_value = attention_value + x
+        attention_value = attention_value + inc
         attention_value = self.self_attent(attention_value) + attention_value
 
         # Flip back
@@ -313,16 +313,11 @@ class DDPM(nn.Module):
             #print("HYPERPARAMS requires LR as parameter")
             raise KeyError("Could not find mapping to learning rate")
 
-    # TODO TODO TODO MODIFY !
     def pos_encoding(self, t, channels):
-        inv_freq = 1.0 / (
-            10000
-            ** (torch.arange(0, channels, 2, device=self.device).float() / channels)
-        )
-        pos_enc_a = torch.sin(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc_b = torch.cos(t.repeat(1, channels // 2) * inv_freq)
-        pos_enc = torch.cat([pos_enc_a, pos_enc_b], dim=-1)
-        return pos_enc
+        # According to [https://arxiv.org/pdf/2006.11239.pdf]
+        a_enc = torch.sin(t.repeat(1, channels // 2) * 1.0 / (10000** (torch.arange(0, channels, 2, device=self.device).float() / channels)))
+        b_enc = torch.cos(t.repeat(1, channels // 2) * 1.0 / (10000** (torch.arange(0, channels, 2, device=self.device).float() / channels)))
+        return torch.cat([a_enc, b_enc], dim=-1)
 
     def __init__(self, channels, time_dimensions, hyperparams):
         '''
@@ -389,7 +384,7 @@ class DDPM(nn.Module):
 
         return output
 
-    def backward(self, predicted_noise, true_noise):
+    def backward(self, predicted_noise, true_noise, no_grad=False):
         # Now in the backward pass is where we update the model based on the loss, please see
         # https://arxiv.org/pdf/2006.11239.pdf, Ho et al. in their description of DDPM models.
         # I use the MSE loss.
@@ -400,12 +395,41 @@ class DDPM(nn.Module):
 
         loss = F.mse_loss(predicted_noise, true_noise)
 
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
+        if not no_grad:
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
 
         return loss.clone().detach().to('cpu')
 
+
+class ema_trainer:
+    '''
+    EMA Training as described in the supplemental PDF is a method of combining the parameters of two models
+    trained in tandem. After some warm-up period, it begins training both models together by combining their weights.
+    '''
+    def __init__(self, warm_up, beta):
+        '''
+        @warm_up: The number of global steps to warm up
+        @beta: The combination parameter
+        '''
+
+        self.warmup = warm_up
+        self.beta = beta
+
+    def step_training(self, base_model, ema_model, step):
+        '''
+        @base_model: The pytorch module that is the base model for prediction
+        @ema_model: The pytorch module that is the ema model used for full prediction (goal of training)
+        @step: The current global step
+        '''
+        if step > self.warmup:
+            for ema_param, base_param in zip(ema_model.parameters(), base_model.parameters()):
+                if ema_param.data is None:
+                    break
+                ema_param.data = ema_param.data * self.beta + (1 - self.beta) * base_param.data
+        else:
+            ema_model.load_state_dict(base_model.state_dict())
 
 
 

@@ -10,7 +10,7 @@ import torch
 
 from PIL import Image
 
-def viz_mnist(images, titles=None):
+def viz_mnist(images, titles=None, title='h'):
     '''
     @images: np array of 28 x 28 images to plot, MAY NOT be None.
     @titles: np vectror of the number associated with each, MAY be None.
@@ -31,6 +31,8 @@ def viz_mnist(images, titles=None):
             axes[i].set_title(f'Image of {titles[i]}', fontsize = 40)
         else:
             axes[i].set_title(f'Provided Image {i+1}', fontsize = 40)
+
+    fig.savefig(title)
 
 def viz_mnist_wchannel(images, titles=None):
     '''
